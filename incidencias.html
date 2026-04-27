@@ -10,13 +10,6 @@
 <meta name="theme-color" content="#1e293b">
 <link id="pwa-manifest" rel="manifest">
 <title>Incidencias Hotel</title>
-<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
-<script>
-  window.OneSignalDeferred = window.OneSignalDeferred || [];
-  OneSignalDeferred.push(async function(OneSignal) {
-    await OneSignal.init({ appId: "ee6e5a9c-4ee1-45ff-b37a-13c872328a4a" });
-  });
-</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -1049,11 +1042,15 @@ function enterApp() {
   loadNotifCount();
   setupRealtime();
 
+  // Pedir permiso de notificaciones push
+  requestNotifPermission(currentUser.id, currentUser.departamento);
 }
 
 function logout() {
   currentUser = null; selectedLoginUser = null; pinValue = '';
   if (realtimeChannel) db.removeChannel(realtimeChannel);
+  // Avisar al SW que cierre la conexión realtime
+  if (swRegistration?.active) swRegistration.active.postMessage({ type: 'LOGOUT' });
   document.getElementById('app-screen').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   document.getElementById('pin-section').style.display = 'none';
@@ -1483,22 +1480,6 @@ async function sendComment() {
 }
 
 // ============================================================
-// PUSH via OneSignal
-// ============================================================
-async function enviarPush(mensaje) {
-  try {
-    // Usamos Supabase Edge Function como proxy para evitar CORS
-    await fetch('https://tkqxrjhbolauquirmojc.supabase.co/functions/v1/send-push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer sb_publishable_efS_3aNiJS9MiYcxd6lzSw_a8fxonOm'
-      },
-      body: JSON.stringify({ mensaje })
-    });
-  } catch(e) { console.log('Push error:', e); }
-}
-
 // NUEVA INCIDENCIA
 // ============================================================
 function openNewIncident() {
@@ -1633,7 +1614,6 @@ async function submitIncident() {
         texto: `Nueva incidencia de ${currentUser.nombre}: "${desc.substring(0,60)}${desc.length>60?'...':''}"`
       })));
     }
-    enviarPush(`Nueva incidencia de ${currentUser.nombre}: ${desc.substring(0,80)}`);
     showToast('✅ Incidencia enviada');
     closeModal('modal-nueva');
     loadTodasPage();
@@ -1869,9 +1849,45 @@ function closeLightbox() {
 })();
 
 // ============================================================
-// PWA: Service Worker (para que Android permita instalación)
+// PWA: Service Worker + Notificaciones Push Nativas
 // ============================================================
-// Service Worker no disponible en modo archivo local
+let swRegistration = null;
+
+async function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    swRegistration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    console.log('[SW] Registrado:', swRegistration.scope);
+  } catch (e) {
+    console.warn('[SW] Error al registrar:', e);
+  }
+}
+
+async function requestNotifPermission(userId, departamento) {
+  if (!('Notification' in window)) return;
+  if (!swRegistration) return;
+
+  let permission = Notification.permission;
+
+  if (permission === 'default') {
+    permission = await Notification.requestPermission();
+  }
+
+  if (permission === 'granted') {
+    // Avisar al Service Worker quién es el usuario
+    const sw = swRegistration.active || swRegistration.installing || swRegistration.waiting;
+    if (sw) {
+      sw.postMessage({ type: 'INIT_NOTIF', userId, departamento });
+    }
+    // También enviar cuando el SW esté listo
+    navigator.serviceWorker.ready.then(reg => {
+      if (reg.active) reg.active.postMessage({ type: 'INIT_NOTIF', userId, departamento });
+    });
+  }
+}
+
+// Registrar SW al cargar la página
+registerServiceWorker();
 
 // ============================================================
 // INIT - iPhone/Safari compatible
